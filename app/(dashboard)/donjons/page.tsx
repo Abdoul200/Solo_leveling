@@ -1,86 +1,75 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Castle, Plus, Sword, Clock, Star, Shield, Skull, CalendarDays, CheckCircle } from 'lucide-react'
+import { Castle, Plus, Sword, Clock, Star, Shield, Skull, CalendarDays, CheckCircle, Zap } from 'lucide-react'
 import DungeonAlert from '@/components/ui/DungeonAlert'
 import RankBadge from '@/components/ui/RankBadge'
 import type { Dungeon, Subject, Rank } from '@/lib/types'
-import { RANKS } from '@/lib/ranks'
 import { RANK_COLORS, getRankGradient } from '@/lib/ranks'
 import { format, addDays, differenceInDays } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import toast from 'react-hot-toast'
-
-const MOCK_SUBJECTS: Subject[] = [
-  { id: 'math', user_id: 'u1', name: 'Mathématiques', color: '#00d4ff', rank: 'C', xp: 1650, level: 7, icon: '📐', created_at: '' },
-  { id: 'phys', user_id: 'u1', name: 'Physique', color: '#8b5cf6', rank: 'C', xp: 1200, level: 5, icon: '⚛️', created_at: '' },
-  { id: 'info', user_id: 'u1', name: 'Informatique', color: '#10b981', rank: 'B', xp: 3800, level: 12, icon: '💻', created_at: '' },
-]
-
-const MOCK_DUNGEONS: Dungeon[] = [
-  {
-    id: 'd1', user_id: 'u1', subject_id: 'math',
-    title: 'Donjon de l\'Algèbre Sombre',
-    description: 'Maîtrise 3 séances d\'algèbre pour obtenir la maîtrise du rang C.',
-    type: 'sprint', rank: 'C', status: 'available', spawn_type: 'random',
-    xp_reward: 350, time_limit_minutes: 90, health_points: null, current_hp: null,
-    exam_date: null, rewards: ['+350 XP', 'Titre: Maître des Matrices'],
-    spawned_at: new Date().toISOString(), completed_at: null,
-  },
-  {
-    id: 'd2', user_id: 'u1', subject_id: 'info',
-    title: 'Citadelle du Code',
-    description: 'Résous 5 problèmes algorithmiques sans aide externe.',
-    type: 'sprint', rank: 'B', status: 'active', spawn_type: 'manual',
-    xp_reward: 500, time_limit_minutes: 120, health_points: null, current_hp: null,
-    exam_date: null, rewards: ['+500 XP', 'Badge: Codeur'],
-    spawned_at: new Date(Date.now() - 3600000).toISOString(), completed_at: null,
-  },
-  {
-    id: 'boss1', user_id: 'u1', subject_id: 'math',
-    title: 'BOSS : Examen Final Analyse',
-    description: 'L\'examen final d\'analyse arrive. Prépare-toi ou sois vaincu.',
-    type: 'boss', rank: 'A', status: 'active', spawn_type: 'boss',
-    xp_reward: 800, time_limit_minutes: null, health_points: 100, current_hp: 65,
-    exam_date: addDays(new Date(), 12).toISOString(),
-    rewards: ['+800 XP', 'Titre: Conquérant de l\'Examen', 'Rang A débloqué'],
-    spawned_at: new Date(Date.now() - 5 * 86400000).toISOString(), completed_at: null,
-  },
-  {
-    id: 'boss2', user_id: 'u1', subject_id: 'phys',
-    title: 'BOSS : Partiel Physique',
-    description: 'Le partiel de physique est annoncé. Le boss s\'éveille...',
-    type: 'boss', rank: 'B', status: 'active', spawn_type: 'boss',
-    xp_reward: 600, time_limit_minutes: null, health_points: 100, current_hp: 82,
-    exam_date: addDays(new Date(), 20).toISOString(),
-    rewards: ['+600 XP', 'Titre: Maître des Forces'],
-    spawned_at: new Date(Date.now() - 2 * 86400000).toISOString(), completed_at: null,
-  },
-  {
-    id: 'd3', user_id: 'u1', subject_id: 'info',
-    title: 'Forteresse des Algorithmes',
-    description: 'Sprint de programmation terminé avec succès !',
-    type: 'sprint', rank: 'C', status: 'completed', spawn_type: 'manual',
-    xp_reward: 300, time_limit_minutes: 60, health_points: null, current_hp: null,
-    exam_date: null, rewards: ['+300 XP'],
-    spawned_at: new Date(Date.now() - 7 * 86400000).toISOString(),
-    completed_at: new Date(Date.now() - 5 * 86400000).toISOString(),
-  },
-]
+import { supabase } from '@/lib/supabase'
+import { useGameStore } from '@/lib/store'
 
 export default function DonjonPage() {
-  const [dungeons, setDungeons] = useState<Dungeon[]>(MOCK_DUNGEONS)
+  const [dungeons, setDungeons] = useState<Dungeon[]>([])
+  const [subjects, setSubjects] = useState<Subject[]>([])
   const [alertDungeon, setAlertDungeon] = useState<Dungeon | null>(null)
   const [showCreateBoss, setShowCreateBoss] = useState(false)
   const [activeTab, setActiveTab] = useState<'active' | 'available' | 'completed'>('active')
+  const [loading, setLoading] = useState(true)
+  const [userId, setUserId] = useState<string | null>(null)
+  const [spawning, setSpawning] = useState(false)
+  const [submittingBoss, setSubmittingBoss] = useState(false)
+
+  const { triggerDungeonAlert } = useGameStore()
 
   // Formulaire boss
   const [bossTitle, setBossTitle] = useState('')
   const [bossDesc, setBossDesc] = useState('')
-  const [bossSubjectId, setBossSubjectId] = useState(MOCK_SUBJECTS[0]?.id || '')
+  const [bossSubjectId, setBossSubjectId] = useState('')
   const [bossExamDate, setBossExamDate] = useState(format(addDays(new Date(), 14), "yyyy-MM-dd"))
   const [bossRank, setBossRank] = useState<Rank>('B')
+
+  const fetchData = useCallback(async (uid: string) => {
+    try {
+      const [dungeonsRes, subjectsRes] = await Promise.all([
+        supabase
+          .from('dungeons')
+          .select('*')
+          .eq('user_id', uid)
+          .order('spawned_at', { ascending: false }),
+        supabase
+          .from('subjects')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: true }),
+      ])
+
+      if (dungeonsRes.data) setDungeons(dungeonsRes.data as Dungeon[])
+      if (subjectsRes.data) {
+        setSubjects(subjectsRes.data as Subject[])
+        if (subjectsRes.data.length > 0) {
+          setBossSubjectId(subjectsRes.data[0].id)
+        }
+      }
+    } catch {
+      toast.error('Le système a détecté une anomalie lors du chargement des donjons.')
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }: { data: { user: { id: string } | null } }) => {
+      if (data.user) {
+        setUserId(data.user.id)
+        fetchData(data.user.id)
+      }
+    })
+  }, [fetchData])
 
   const activeDungeons = dungeons.filter(d => d.status === 'active')
   const availableDungeons = dungeons.filter(d => d.status === 'available')
@@ -89,57 +78,152 @@ export default function DonjonPage() {
   const bossDungeons = activeDungeons.filter(d => d.type === 'boss')
   const sprintDungeons = activeDungeons.filter(d => d.type === 'sprint')
 
-  const handleCreateBoss = () => {
+  const handleCreateBoss = async () => {
     if (!bossTitle.trim()) {
       toast.error('Indique le nom de l\'examen')
       return
     }
+    if (!userId) return
 
-    const daysUntilExam = differenceInDays(new Date(bossExamDate), new Date())
-    const xpReward = Math.max(200, daysUntilExam * 30)
+    setSubmittingBoss(true)
+    try {
+      const res = await fetch('/api/boss', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          examName: bossTitle,
+          subjectId: bossSubjectId || null,
+          examDate: new Date(bossExamDate).toISOString(),
+          rank: bossRank,
+          description: bossDesc || undefined,
+        }),
+      })
+      const data = await res.json()
 
-    const newBoss: Dungeon = {
-      id: `boss_${Date.now()}`,
-      user_id: 'u1',
-      subject_id: bossSubjectId || null,
-      title: `BOSS : ${bossTitle}`,
-      description: bossDesc || `L\'examen approche. Prépare-toi !`,
-      type: 'boss',
-      rank: bossRank,
-      status: 'active',
-      spawn_type: 'boss',
-      xp_reward: xpReward,
-      time_limit_minutes: null,
-      health_points: 100,
-      current_hp: 100,
-      exam_date: new Date(bossExamDate).toISOString(),
-      rewards: [`+${xpReward} XP`, 'Titre: Vainqueur de l\'Examen'],
-      spawned_at: new Date().toISOString(),
-      completed_at: null,
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        return
+      }
+
+      if (data.dungeon) {
+        setDungeons(prev => [data.dungeon, ...prev])
+        triggerDungeonAlert({ dungeon: data.dungeon })
+      }
+
+      setShowCreateBoss(false)
+      setBossTitle('')
+      setBossDesc('')
+      toast.success('Boss d\'examen créé ! La bataille commence...')
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+    } finally {
+      setSubmittingBoss(false)
     }
-
-    setDungeons(prev => [...prev, newBoss])
-    setShowCreateBoss(false)
-    setBossTitle('')
-    setBossDesc('')
-    toast.success('Boss d\'examen créé ! La bataille commence...')
   }
 
-  const enterDungeon = (dungeonId: string) => {
+  const enterDungeon = async (dungeonId: string) => {
+    if (!userId) return
     setDungeons(prev => prev.map(d =>
       d.id === dungeonId ? { ...d, status: 'active' as const } : d
     ))
     setAlertDungeon(null)
-    toast.success('Tu es entré dans le donjon !')
+
+    try {
+      await supabase
+        .from('dungeons')
+        .update({ status: 'active' })
+        .eq('id', dungeonId)
+        .eq('user_id', userId)
+      toast.success('Tu es entré dans le donjon !')
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+      fetchData(userId)
+    }
   }
 
-  const subjectMap = MOCK_SUBJECTS.reduce((acc, s) => ({ ...acc, [s.id]: s }), {} as Record<string, Subject>)
+  const completeDungeon = async (dungeonId: string) => {
+    if (!userId) return
+    try {
+      const res = await fetch('/api/dungeons/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dungeonId, userId }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        return
+      }
+
+      setDungeons(prev => prev.map(d =>
+        d.id === dungeonId ? { ...d, status: 'completed' as const, completed_at: new Date().toISOString() } : d
+      ))
+      toast.success(`Donjon conquis ! +${data.xp_earned} XP`)
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+    }
+  }
+
+  const handleSpawnRandom = async () => {
+    if (!userId) return
+    setSpawning(true)
+    try {
+      const res = await fetch('/api/dungeons/spawn', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, type: 'manual', force: true }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        return
+      }
+
+      if (data.spawned && data.dungeon) {
+        setDungeons(prev => [data.dungeon, ...prev])
+        triggerDungeonAlert({ dungeon: data.dungeon })
+        toast.success(`Donjon de Rang ${data.dungeon.rank} apparu !`)
+      } else {
+        toast('Aucun donjon généré. Réessaie plus tard.')
+      }
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+    } finally {
+      setSpawning(false)
+    }
+  }
+
+  const subjectMap = subjects.reduce((acc, s) => ({ ...acc, [s.id]: s }), {} as Record<string, Subject>)
 
   const tabs = [
     { key: 'active' as const, label: 'Actifs', count: activeDungeons.length, icon: Sword },
     { key: 'available' as const, label: 'Disponibles', count: availableDungeons.length, icon: Castle },
     { key: 'completed' as const, label: 'Complétés', count: completedDungeons.length, icon: CheckCircle },
   ]
+
+  if (loading) {
+    return (
+      <div className="p-4 lg:p-8 max-w-4xl mx-auto">
+        <div className="mb-8">
+          <div className="h-8 w-32 bg-white/5 animate-pulse rounded-lg mb-2" />
+          <div className="h-4 w-56 bg-white/5 animate-pulse rounded" />
+        </div>
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="h-20 bg-white/5 animate-pulse rounded-xl" />
+          ))}
+        </div>
+        <div className="space-y-4">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="h-40 bg-white/5 animate-pulse rounded-xl" />
+          ))}
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="p-4 lg:p-8 max-w-4xl mx-auto">
@@ -157,16 +241,30 @@ export default function DonjonPage() {
           <p className="text-sm text-sl-text-muted">Conquiers les épreuves du système</p>
         </div>
 
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => setShowCreateBoss(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
-          style={{ background: 'linear-gradient(135deg, #7f1d1d, #ef4444)', color: 'white', boxShadow: '0 0 15px rgba(239, 68, 68, 0.3)' }}
-        >
-          <Skull className="w-4 h-4" />
-          Annoncer un examen
-        </motion.button>
+        <div className="flex gap-2">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleSpawnRandom}
+            disabled={spawning}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: 'rgba(139, 92, 246, 0.1)', color: '#8b5cf6', border: '1px solid rgba(139, 92, 246, 0.3)' }}
+          >
+            <Zap className={`w-4 h-4 ${spawning ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Spawn</span>
+          </motion.button>
+
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowCreateBoss(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: 'linear-gradient(135deg, #7f1d1d, #ef4444)', color: 'white', boxShadow: '0 0 15px rgba(239, 68, 68, 0.3)' }}
+          >
+            <Skull className="w-4 h-4" />
+            Annoncer un examen
+          </motion.button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -234,7 +332,6 @@ export default function DonjonPage() {
                   boxShadow: `0 0 30px ${rankColor}15`,
                 }}
               >
-                {/* Badge BOSS */}
                 <div className="flex items-center gap-3 mb-4">
                   <motion.div
                     animate={{ opacity: [1, 0.4, 1] }}
@@ -278,13 +375,10 @@ export default function DonjonPage() {
                       }}
                       animate={{ opacity: [1, 0.8, 1] }}
                       transition={{ duration: 1.5, repeat: Infinity }}
-                    >
-                      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
-                    </motion.div>
+                    />
                   </div>
                 </div>
 
-                {/* Exam date & rewards */}
                 <div className="flex items-center justify-between text-sm mt-4">
                   {dungeon.exam_date && (
                     <div className="flex items-center gap-1.5 text-sl-text-muted">
@@ -298,10 +392,10 @@ export default function DonjonPage() {
                   </div>
                 </div>
 
-                {/* Bouton travailler */}
                 <motion.button
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
+                  onClick={() => completeDungeon(dungeon.id)}
                   className="w-full mt-4 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2"
                   style={{
                     background: `linear-gradient(135deg, ${rankColor}30, ${rankColor}50)`,
@@ -356,6 +450,17 @@ export default function DonjonPage() {
                         +{dungeon.xp_reward} XP
                       </div>
                     </div>
+
+                    <motion.button
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      onClick={() => completeDungeon(dungeon.id)}
+                      className="mt-3 flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold"
+                      style={{ background: `${rankColor}20`, color: rankColor, border: `1px solid ${rankColor}30` }}
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      Terminer le donjon
+                    </motion.button>
                   </div>
                 </div>
               </motion.div>
@@ -387,7 +492,7 @@ export default function DonjonPage() {
                   background: `${rankColor}05`,
                   border: `1px solid ${rankColor}20`,
                 }}
-                whileHover={{ scale: 1.02, borderColor: `${rankColor}50` }}
+                whileHover={{ scale: 1.02 }}
                 onClick={() => setAlertDungeon(dungeon)}
               >
                 <div className="flex items-center gap-3">
@@ -411,6 +516,16 @@ export default function DonjonPage() {
             <div className="text-center py-12 text-sl-text-muted">
               <Castle className="w-10 h-10 mx-auto mb-3 opacity-20" />
               <p>Aucun donjon disponible</p>
+              <motion.button
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                onClick={handleSpawnRandom}
+                disabled={spawning}
+                className="mt-4 px-4 py-2 rounded-xl text-sm font-semibold"
+                style={{ background: 'linear-gradient(135deg, #4c1d95, #8b5cf6)', color: 'white' }}
+              >
+                Invoquer un donjon
+              </motion.button>
             </div>
           )}
         </div>
@@ -436,7 +551,7 @@ export default function DonjonPage() {
                       Terminé le {dungeon.completed_at && format(new Date(dungeon.completed_at), "dd MMM yyyy", { locale: fr })}
                     </div>
                   </div>
-                  <div className="font-bold text-sm text-sl-green">+{dungeon.xp_reward} XP</div>
+                  <div className="font-bold text-sm" style={{ color: rankColor }}>+{dungeon.xp_reward} XP</div>
                 </div>
               </motion.div>
             )
@@ -483,9 +598,19 @@ export default function DonjonPage() {
                     </div>
 
                     <div>
+                      <label className="block text-xs font-medium text-sl-text-muted mb-2 uppercase tracking-wider">Description (optionnel)</label>
+                      <textarea value={bossDesc} onChange={(e) => setBossDesc(e.target.value)}
+                        placeholder="Détails de l'examen..." rows={2}
+                        className="w-full py-3 px-4 rounded-lg text-sm outline-none resize-none"
+                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(239, 68, 68, 0.2)', color: '#e2e8f0' }}
+                        onFocus={(e) => e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.5)'}
+                        onBlur={(e) => e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.2)'} />
+                    </div>
+
+                    <div>
                       <label className="block text-xs font-medium text-sl-text-muted mb-2 uppercase tracking-wider">Matière</label>
                       <div className="flex gap-2 flex-wrap">
-                        {MOCK_SUBJECTS.map((s) => (
+                        {subjects.map((s) => (
                           <button key={s.id} type="button" onClick={() => setBossSubjectId(s.id)}
                             className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
                             style={{ background: bossSubjectId === s.id ? `${s.color}20` : 'rgba(255,255,255,0.04)', border: bossSubjectId === s.id ? `1px solid ${s.color}` : '1px solid rgba(255,255,255,0.08)', color: bossSubjectId === s.id ? s.color : '#94a3b8' }}>
@@ -526,11 +651,19 @@ export default function DonjonPage() {
                         style={{ background: 'rgba(255,255,255,0.05)', color: '#94a3b8', border: '1px solid rgba(255,255,255,0.1)' }}>
                         Annuler
                       </button>
-                      <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }} onClick={handleCreateBoss}
+                      <motion.button whileHover={{ scale: submittingBoss ? 1 : 1.02 }} whileTap={{ scale: submittingBoss ? 1 : 0.98 }}
+                        onClick={handleCreateBoss}
+                        disabled={submittingBoss}
                         className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm"
                         style={{ background: 'linear-gradient(135deg, #7f1d1d, #ef4444)', color: 'white', boxShadow: '0 0 15px rgba(239, 68, 68, 0.3)' }}>
-                        <Skull className="w-4 h-4" />
-                        Invoquer le Boss
+                        {submittingBoss ? (
+                          <motion.div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full" animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }} />
+                        ) : (
+                          <>
+                            <Skull className="w-4 h-4" />
+                            Invoquer le Boss
+                          </>
+                        )}
                       </motion.button>
                     </div>
                   </div>

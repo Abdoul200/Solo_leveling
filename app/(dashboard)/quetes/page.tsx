@@ -1,86 +1,79 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Plus, BookOpen, Clock, Sword, CheckCircle, Filter, Zap } from 'lucide-react'
+import { Plus, BookOpen, Clock, Sword, CheckCircle, Zap, RefreshCw } from 'lucide-react'
 import QuestCard from '@/components/ui/QuestCard'
 import LevelUpModal from '@/components/ui/LevelUpModal'
 import type { Quest, Subject } from '@/lib/types'
-import { SUBJECT_ICONS, SUBJECT_COLORS, SPACED_REPETITION_INTERVALS, XP_REWARDS } from '@/lib/constants'
+import { SPACED_REPETITION_INTERVALS, XP_REWARDS } from '@/lib/constants'
 import { addDays, format } from 'date-fns'
 import { fr } from 'date-fns/locale'
 import toast from 'react-hot-toast'
-
-// Matières mock
-const MOCK_SUBJECTS: Subject[] = [
-  { id: 'math', user_id: 'u1', name: 'Mathématiques', color: '#00d4ff', rank: 'C', xp: 1650, level: 7, icon: '📐', created_at: '' },
-  { id: 'phys', user_id: 'u1', name: 'Physique', color: '#8b5cf6', rank: 'C', xp: 1200, level: 5, icon: '⚛️', created_at: '' },
-  { id: 'info', user_id: 'u1', name: 'Informatique', color: '#10b981', rank: 'B', xp: 3800, level: 12, icon: '💻', created_at: '' },
-  { id: 'eco', user_id: 'u1', name: 'Économie', color: '#f59e0b', rank: 'D', xp: 900, level: 3, icon: '📊', created_at: '' },
-]
-
-// Quêtes mock
-const MOCK_QUESTS: Quest[] = [
-  {
-    id: 'q1', user_id: 'u1', subject_id: 'math',
-    title: 'Révision Matrices & Déterminants (J+1)',
-    description: 'Revoir les propriétés des matrices, calcul de déterminants 2x2 et 3x3, systèmes de Cramer.',
-    type: 'revision', status: 'pending', xp_reward: 100,
-    min_duration_minutes: 25, time_spent_minutes: 0, timer_started_at: null,
-    due_date: new Date(Date.now() + 3 * 3600000).toISOString(),
-    completed_at: null, course_entry_id: 'c1', ai_generated: false,
-  },
-  {
-    id: 'q2', user_id: 'u1', subject_id: null,
-    title: 'Séance de concentration quotidienne',
-    description: 'Travaille sur la tâche la plus importante de la journée sans interruption.',
-    type: 'daily', status: 'active', xp_reward: 60,
-    min_duration_minutes: 20, time_spent_minutes: 8, timer_started_at: new Date(Date.now() - 480000).toISOString(),
-    due_date: new Date(Date.now() + 10 * 3600000).toISOString(),
-    completed_at: null, course_entry_id: null, ai_generated: true,
-  },
-  {
-    id: 'q3', user_id: 'u1', subject_id: 'phys',
-    title: 'Thermodynamique 1er principe (J+3)',
-    description: 'Révision du premier principe de la thermodynamique: énergie interne, travail, chaleur.',
-    type: 'revision', status: 'pending', xp_reward: 90,
-    min_duration_minutes: 20, time_spent_minutes: 0, timer_started_at: null,
-    due_date: new Date(Date.now() + 5 * 3600000).toISOString(),
-    completed_at: null, course_entry_id: 'c2', ai_generated: false,
-  },
-  {
-    id: 'q4', user_id: 'u1', subject_id: 'info',
-    title: 'Séance de sport — Cardio',
-    description: '30 minutes de cardio selon le programme du système.',
-    type: 'physical', status: 'pending', xp_reward: 80,
-    min_duration_minutes: 30, time_spent_minutes: 0, timer_started_at: null,
-    due_date: new Date(Date.now() + 8 * 3600000).toISOString(),
-    completed_at: null, course_entry_id: null, ai_generated: true,
-  },
-  {
-    id: 'q5', user_id: 'u1', subject_id: 'math',
-    title: 'Problèmes d\'Analyse Complexe',
-    description: 'Compléter les exercices 3.4 à 3.8 du manuel — fonctions holomorphes.',
-    type: 'special', status: 'completed', xp_reward: 200,
-    min_duration_minutes: 45, time_spent_minutes: 52, timer_started_at: null,
-    due_date: new Date(Date.now() - 3600000).toISOString(),
-    completed_at: new Date(Date.now() - 1800000).toISOString(), course_entry_id: null, ai_generated: false,
-  },
-]
+import { supabase } from '@/lib/supabase'
+import { useGameStore } from '@/lib/store'
 
 type FilterType = 'all' | 'pending' | 'active' | 'completed' | 'failed'
 
 export default function QuestesPage() {
-  const [quests, setQuests] = useState<Quest[]>(MOCK_QUESTS)
+  const [quests, setQuests] = useState<Quest[]>([])
+  const [subjects, setSubjects] = useState<Subject[]>([])
   const [filter, setFilter] = useState<FilterType>('all')
   const [showAddCourse, setShowAddCourse] = useState(false)
   const [showLevelUp, setShowLevelUp] = useState(false)
+  const [levelUpLevel, setLevelUpLevel] = useState(1)
+  const [levelUpXp, setLevelUpXp] = useState(0)
+  const [loading, setLoading] = useState(true)
+  const [generatingQuests, setGeneratingQuests] = useState(false)
+  const [submittingCourse, setSubmittingCourse] = useState(false)
+  const [userId, setUserId] = useState<string | null>(null)
+
+  const { triggerLevelUp, updateQuest: updateStoreQuest } = useGameStore()
 
   // Formulaire ajout cours
-  const [courseSubjectId, setCourseSubjectId] = useState(MOCK_SUBJECTS[0]?.id || '')
+  const [courseSubjectId, setCourseSubjectId] = useState('')
   const [courseTitle, setCourseTitle] = useState('')
   const [courseDesc, setCourseDesc] = useState('')
   const [courseDate, setCourseDate] = useState(format(new Date(), "yyyy-MM-dd'T'HH:mm"))
+
+  const fetchData = useCallback(async (uid: string) => {
+    try {
+      const [questsRes, subjectsRes] = await Promise.all([
+        supabase
+          .from('quests')
+          .select('*')
+          .eq('user_id', uid)
+          .order('due_date', { ascending: true }),
+        supabase
+          .from('subjects')
+          .select('*')
+          .eq('user_id', uid)
+          .order('created_at', { ascending: true }),
+      ])
+
+      if (questsRes.data) setQuests(questsRes.data as Quest[])
+      if (subjectsRes.data) {
+        setSubjects(subjectsRes.data as Subject[])
+        if (subjectsRes.data.length > 0 && !courseSubjectId) {
+          setCourseSubjectId(subjectsRes.data[0].id)
+        }
+      }
+    } catch {
+      toast.error('Le système a détecté une anomalie lors du chargement des quêtes.')
+    } finally {
+      setLoading(false)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }: { data: { user: { id: string } | null } }) => {
+      if (data.user) {
+        setUserId(data.user.id)
+        fetchData(data.user.id)
+      }
+    })
+  }, [fetchData])
 
   const filteredQuests = filter === 'all'
     ? quests
@@ -90,73 +83,210 @@ export default function QuestesPage() {
   const activeCount = quests.filter(q => q.status === 'active').length
   const completedCount = quests.filter(q => q.status === 'completed').length
 
-  const handleQuestStart = (questId: string) => {
+  const handleQuestStart = async (questId: string) => {
+    if (!userId) return
+    // Optimistic update
     setQuests(prev => prev.map(q =>
-      q.id === questId
-        ? { ...q, status: 'active' as const, timer_started_at: new Date().toISOString() }
-        : q
+      q.id === questId ? { ...q, status: 'active' as const, timer_started_at: new Date().toISOString() } : q
     ))
-    toast.success('Quête démarrée ! Le timer tourne...')
-  }
 
-  const handleQuestComplete = (questId: string) => {
-    const quest = quests.find(q => q.id === questId)
-    setQuests(prev => prev.map(q =>
-      q.id === questId
-        ? { ...q, status: 'completed' as const, completed_at: new Date().toISOString() }
-        : q
-    ))
-    if (quest) {
-      toast.success(`Quête accomplie ! +${quest.xp_reward} XP`)
-      setShowLevelUp(true)
+    try {
+      const res = await fetch('/api/quests/timer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questId, action: 'start', userId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        fetchData(userId)
+        return
+      }
+      if (data.quest) {
+        setQuests(prev => prev.map(q => q.id === questId ? data.quest : q))
+        updateStoreQuest(questId, data.quest)
+      }
+      toast.success('Quête démarrée ! Le timer tourne...')
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+      fetchData(userId)
     }
   }
 
-  const handleQuestAbandon = (questId: string) => {
+  const handleQuestPause = async (questId: string) => {
+    if (!userId) return
+    setQuests(prev => prev.map(q =>
+      q.id === questId ? { ...q, status: 'pending' as const, timer_started_at: null } : q
+    ))
+
+    try {
+      const res = await fetch('/api/quests/timer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questId, action: 'pause', userId }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        fetchData(userId)
+        return
+      }
+      if (data.quest) {
+        setQuests(prev => prev.map(q => q.id === questId ? data.quest : q))
+        updateStoreQuest(questId, data.quest)
+      }
+      toast('Quête mise en pause.')
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+      fetchData(userId)
+    }
+  }
+
+  const handleQuestComplete = async (questId: string) => {
+    if (!userId) return
+    setQuests(prev => prev.map(q =>
+      q.id === questId ? { ...q, status: 'completed' as const, completed_at: new Date().toISOString() } : q
+    ))
+
+    try {
+      const res = await fetch('/api/quests/timer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questId, action: 'complete', userId }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        fetchData(userId)
+        return
+      }
+
+      if (data.quest) {
+        setQuests(prev => prev.map(q => q.id === questId ? data.quest : q))
+      }
+
+      toast.success(`Quête accomplie ! +${data.xp_earned} XP`)
+
+      if (data.level_up) {
+        setLevelUpLevel(data.xp_result?.newLevel ?? 1)
+        setLevelUpXp(data.xp_earned ?? 0)
+        setShowLevelUp(true)
+        triggerLevelUp({
+          oldRank: data.xp_result?.oldRank ?? 'E',
+          newRank: data.xp_result?.newRank ?? 'E',
+          oldLevel: data.xp_result?.oldLevel ?? 1,
+          newLevel: data.xp_result?.newLevel ?? 1,
+          xpGained: data.xp_earned ?? 0,
+          titleUnlocked: data.new_titles?.[0],
+          skillUnlocked: data.new_skills?.[0],
+        })
+      }
+
+      if (data.new_titles?.length > 0) {
+        toast(`Titre débloqué : ${data.new_titles[0]} !`, { icon: '🏆', duration: 4000 })
+      }
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+      fetchData(userId)
+    }
+  }
+
+  const handleQuestAbandon = async (questId: string) => {
+    if (!userId) return
     setQuests(prev => prev.map(q =>
       q.id === questId ? { ...q, status: 'failed' as const } : q
     ))
-    toast.error('Quête abandonnée.')
+
+    try {
+      const res = await fetch('/api/quests/timer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questId, action: 'abandon', userId }),
+      })
+      const data = await res.json()
+      if (data.quest) {
+        setQuests(prev => prev.map(q => q.id === questId ? data.quest : q))
+      }
+      toast.error('Quête abandonnée.')
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+    }
   }
 
-  const handleAddCourse = () => {
+  const handleAddCourse = async () => {
     if (!courseTitle.trim()) {
       toast.error('Indique le titre du cours')
       return
     }
+    if (!userId) return
 
-    // Créer une quête de révision pour chaque intervalle
-    const studiedAt = new Date(courseDate)
-    const newQuests: Quest[] = SPACED_REPETITION_INTERVALS.map((days, i) => {
-      const dueDate = addDays(studiedAt, days)
-      const subject = MOCK_SUBJECTS.find(s => s.id === courseSubjectId)
-      return {
-        id: `rev_${Date.now()}_${i}`,
-        user_id: 'u1',
-        subject_id: courseSubjectId || null,
-        title: `${courseTitle} (J+${days})`,
-        description: courseDesc || `Révision J+${days} de : ${courseTitle}`,
-        type: 'revision' as const,
-        status: 'pending' as const,
-        xp_reward: XP_REWARDS.quest_revision_base,
-        min_duration_minutes: 20,
-        time_spent_minutes: 0,
-        timer_started_at: null,
-        due_date: dueDate.toISOString(),
-        completed_at: null,
-        course_entry_id: `course_${Date.now()}`,
-        ai_generated: false,
+    setSubmittingCourse(true)
+    try {
+      const res = await fetch('/api/courses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId,
+          subjectId: courseSubjectId || null,
+          title: courseTitle,
+          description: courseDesc || null,
+          studiedAt: courseDate ? new Date(courseDate).toISOString() : new Date().toISOString(),
+        }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        return
       }
-    })
 
-    setQuests(prev => [...prev, ...newQuests])
-    setShowAddCourse(false)
-    setCourseTitle('')
-    setCourseDesc('')
-    toast.success(`Cours ajouté ! 5 révisions programmées (J+1, J+3, J+7, J+14, J+30)`)
+      // Ajouter les nouvelles quêtes à la liste
+      if (data.quests && data.quests.length > 0) {
+        setQuests(prev => [...prev, ...data.quests])
+      }
+
+      setShowAddCourse(false)
+      setCourseTitle('')
+      setCourseDesc('')
+      toast.success(`Cours ajouté ! 5 révisions programmées (J+1, J+3, J+7, J+14, J+30)`)
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+    } finally {
+      setSubmittingCourse(false)
+    }
   }
 
-  const subjectMap = MOCK_SUBJECTS.reduce((acc, s) => ({ ...acc, [s.id]: s }), {} as Record<string, Subject>)
+  const handleGenerateQuests = async () => {
+    if (!userId) return
+    setGeneratingQuests(true)
+    try {
+      const res = await fetch('/api/quests/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      })
+      const data = await res.json()
+
+      if (!res.ok) {
+        toast.error(data.error || 'Le système a détecté une anomalie.')
+        return
+      }
+
+      if (data.quests && data.quests.length > 0) {
+        setQuests(prev => [...prev, ...data.quests])
+        toast.success(`${data.quests.length} nouvelles quêtes générées par le Système !`)
+      } else {
+        toast('Aucune nouvelle quête générée. Reviens plus tard.')
+      }
+    } catch {
+      toast.error('Le système a détecté une anomalie.')
+    } finally {
+      setGeneratingQuests(false)
+    }
+  }
+
+  const subjectMap = subjects.reduce((acc, s) => ({ ...acc, [s.id]: s }), {} as Record<string, Subject>)
 
   const FILTERS: { key: FilterType; label: string; count?: number }[] = [
     { key: 'all', label: 'Toutes', count: quests.length },
@@ -165,9 +295,35 @@ export default function QuestesPage() {
     { key: 'completed', label: 'Terminées', count: completedCount },
   ]
 
+  if (loading) {
+    return (
+      <div className="p-4 lg:p-8 max-w-3xl mx-auto">
+        <div className="mb-8">
+          <div className="h-8 w-32 bg-white/5 animate-pulse rounded-lg mb-2" />
+          <div className="h-4 w-56 bg-white/5 animate-pulse rounded" />
+        </div>
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          {[1, 2, 3].map(i => (
+            <div key={i} className="h-20 bg-white/5 animate-pulse rounded-xl" />
+          ))}
+        </div>
+        <div className="space-y-3">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="h-24 bg-white/5 animate-pulse rounded-xl" />
+          ))}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="p-4 lg:p-8 max-w-3xl mx-auto">
-      <LevelUpModal show={showLevelUp} newLevel={9} xpGained={120} onClose={() => setShowLevelUp(false)} />
+      <LevelUpModal
+        show={showLevelUp}
+        newLevel={levelUpLevel}
+        xpGained={levelUpXp}
+        onClose={() => setShowLevelUp(false)}
+      />
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-8">
@@ -176,16 +332,30 @@ export default function QuestesPage() {
           <p className="text-sm text-sl-text-muted">Accomplis tes missions pour progresser</p>
         </div>
 
-        <motion.button
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => setShowAddCourse(true)}
-          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
-          style={{ background: 'linear-gradient(135deg, #6d28d9, #8b5cf6)', color: 'white', boxShadow: '0 0 15px rgba(109, 40, 217, 0.4)' }}
-        >
-          <Plus className="w-4 h-4" />
-          Ajouter un cours
-        </motion.button>
+        <div className="flex gap-2">
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={handleGenerateQuests}
+            disabled={generatingQuests}
+            className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: 'rgba(0, 212, 255, 0.1)', color: '#00d4ff', border: '1px solid rgba(0, 212, 255, 0.3)' }}
+          >
+            <RefreshCw className={`w-4 h-4 ${generatingQuests ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Générer</span>
+          </motion.button>
+
+          <motion.button
+            whileHover={{ scale: 1.05 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => setShowAddCourse(true)}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: 'linear-gradient(135deg, #6d28d9, #8b5cf6)', color: 'white', boxShadow: '0 0 15px rgba(109, 40, 217, 0.4)' }}
+          >
+            <Plus className="w-4 h-4" />
+            Ajouter un cours
+          </motion.button>
+        </div>
       </div>
 
       {/* Stats rapides */}
@@ -236,6 +406,18 @@ export default function QuestesPage() {
             >
               <Zap className="w-10 h-10 mx-auto mb-3 opacity-20" />
               <p>Aucune quête dans cette catégorie</p>
+              {filter === 'all' && (
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  onClick={handleGenerateQuests}
+                  disabled={generatingQuests}
+                  className="mt-4 px-4 py-2 rounded-xl text-sm font-semibold"
+                  style={{ background: 'linear-gradient(135deg, #6d28d9, #8b5cf6)', color: 'white' }}
+                >
+                  Générer des quêtes
+                </motion.button>
+              )}
             </motion.div>
           ) : (
             filteredQuests.map((quest) => {
@@ -247,6 +429,7 @@ export default function QuestesPage() {
                   onStart={handleQuestStart}
                   onComplete={handleQuestComplete}
                   onAbandon={handleQuestAbandon}
+
                   subjectName={subject?.name}
                   subjectColor={subject?.color}
                 />
@@ -299,23 +482,27 @@ export default function QuestesPage() {
                     {/* Matière */}
                     <div>
                       <label className="block text-xs font-medium text-sl-text-muted mb-2 uppercase tracking-wider">Matière</label>
-                      <div className="flex gap-2 flex-wrap">
-                        {MOCK_SUBJECTS.map((s) => (
-                          <button
-                            key={s.id}
-                            type="button"
-                            onClick={() => setCourseSubjectId(s.id)}
-                            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
-                            style={{
-                              background: courseSubjectId === s.id ? `${s.color}20` : 'rgba(255,255,255,0.04)',
-                              border: courseSubjectId === s.id ? `1px solid ${s.color}` : '1px solid rgba(255,255,255,0.08)',
-                              color: courseSubjectId === s.id ? s.color : '#94a3b8',
-                            }}
-                          >
-                            {s.icon} {s.name}
-                          </button>
-                        ))}
-                      </div>
+                      {subjects.length > 0 ? (
+                        <div className="flex gap-2 flex-wrap">
+                          {subjects.map((s) => (
+                            <button
+                              key={s.id}
+                              type="button"
+                              onClick={() => setCourseSubjectId(s.id)}
+                              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all"
+                              style={{
+                                background: courseSubjectId === s.id ? `${s.color}20` : 'rgba(255,255,255,0.04)',
+                                border: courseSubjectId === s.id ? `1px solid ${s.color}` : '1px solid rgba(255,255,255,0.08)',
+                                color: courseSubjectId === s.id ? s.color : '#94a3b8',
+                              }}
+                            >
+                              {s.icon} {s.name}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-xs text-sl-text-muted py-2">Aucune matière configurée</div>
+                      )}
                     </div>
 
                     {/* Titre */}
@@ -388,14 +575,25 @@ export default function QuestesPage() {
                         Annuler
                       </button>
                       <motion.button
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
+                        whileHover={{ scale: submittingCourse ? 1 : 1.02 }}
+                        whileTap={{ scale: submittingCourse ? 1 : 0.98 }}
                         onClick={handleAddCourse}
+                        disabled={submittingCourse}
                         className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-bold text-sm"
                         style={{ background: 'linear-gradient(135deg, #6d28d9, #8b5cf6)', color: 'white', boxShadow: '0 0 15px rgba(109, 40, 217, 0.3)' }}
                       >
-                        <BookOpen className="w-4 h-4" />
-                        Ajouter le cours
+                        {submittingCourse ? (
+                          <motion.div
+                            className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full"
+                            animate={{ rotate: 360 }}
+                            transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }}
+                          />
+                        ) : (
+                          <>
+                            <BookOpen className="w-4 h-4" />
+                            Ajouter le cours
+                          </>
+                        )}
                       </motion.button>
                     </div>
                   </div>
