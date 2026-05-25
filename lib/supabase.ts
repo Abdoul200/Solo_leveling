@@ -1,6 +1,4 @@
 import { createClient } from '@supabase/supabase-js'
-import { createClientComponentClient as createClientComp, createServerComponentClient as createServerComp, createRouteHandlerClient as createRouteHandler } from '@supabase/auth-helpers-nextjs'
-import { cookies } from 'next/headers'
 import type { UserProfile, Subject, Quest, Dungeon, CourseEntry, WorkoutSession, PhysicalStats, JournalEntry } from './types'
 import { calculateRank, calculateLevel, RANKS } from './ranks'
 
@@ -53,35 +51,40 @@ export type Database = {
 }
 
 // URL et clé Supabase depuis les variables d'environnement
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co'
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key'
+function getSupabaseUrl() {
+  return process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co'
+}
+function getSupabaseAnonKey() {
+  return process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key'
+}
 
-// Client Supabase pour le côté client (composants client)
+// Client Supabase public lazy (côté client)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    persistSession: true,
-    autoRefreshToken: true,
-    detectSessionInUrl: true,
+let _supabaseClient: any = null
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const supabase: any = new Proxy({} as any, {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  get(_target, prop): any {
+    if (!_supabaseClient) {
+      _supabaseClient = createClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+      })
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const value = (_supabaseClient as any)[prop]
+    return typeof value === 'function' ? value.bind(_supabaseClient) : value
   },
-}) as any
+})
 
-// Client pour les composants client (avec auth-helpers)
+// Client pour les composants client
 export function createClientComponentClient() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return createClientComp() as any
-}
-
-// Client pour les server components
-export function createServerComponentClient() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return createServerComp({ cookies }) as any
-}
-
-// Client pour les API routes (route handlers)
-export function createRouteHandlerClient() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return createRouteHandler({ cookies }) as any
+  return createClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+    },
+  }) as any
 }
 
 // Client Supabase côté serveur (avec service role key — bypass RLS)
@@ -99,18 +102,6 @@ export function createServerSupabaseClient() {
 // ============================================================
 // HELPERS CÔTÉ SERVEUR
 // ============================================================
-
-// Récupérer l'utilisateur depuis le contexte serveur
-export async function getUser() {
-  try {
-    const sb = createServerComponentClient()
-    const { data: { user }, error } = await sb.auth.getUser()
-    if (error) return null
-    return user
-  } catch {
-    return null
-  }
-}
 
 // Récupérer le profil complet avec les matières
 export async function getUserProfile(userId: string) {
@@ -177,7 +168,7 @@ export async function updateXP(
     const newRank = calculateRank(newXP)
     const newLevel = calculateLevel(newXP)
 
-    const rankUp = RANKS.indexOf(newRank) > RANKS.indexOf(oldRank as string)
+    const rankUp = RANKS.indexOf(newRank) > RANKS.indexOf(oldRank as import('./types').Rank)
     const levelUp = newLevel > oldLevel || rankUp
 
     // Mettre à jour le profil global

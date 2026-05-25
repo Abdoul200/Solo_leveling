@@ -1,6 +1,6 @@
-import { createMiddlewareClient } from '@supabase/auth-helpers-nextjs'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
+import { createServerClient } from '@supabase/auth-helpers-nextjs'
 
 // Routes protégées (requièrent une authentification)
 const PROTECTED_ROUTES = [
@@ -18,10 +18,28 @@ const PROTECTED_ROUTES = [
 const AUTH_ROUTES = ['/login', '/register']
 
 export async function middleware(req: NextRequest) {
-  const res = NextResponse.next()
-  const supabase = createMiddlewareClient({ req, res })
+  let response = NextResponse.next({ request: req })
 
-  // Récupérer la session
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+
+  // Créer le client Supabase pour le middleware avec getAll/setAll
+  const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
+    cookies: {
+      getAll() {
+        return req.cookies.getAll()
+      },
+      setAll(cookiesToSet) {
+        cookiesToSet.forEach(({ name, value }) => req.cookies.set(name, value))
+        response = NextResponse.next({ request: req })
+        cookiesToSet.forEach(({ name, value, options }) =>
+          response.cookies.set(name, value, options)
+        )
+      },
+    },
+  })
+
+  // Récupérer la session (nécessaire pour rafraîchir les tokens)
   const {
     data: { session },
   } = await supabase.auth.getSession()
@@ -48,7 +66,7 @@ export async function middleware(req: NextRequest) {
     return NextResponse.redirect(new URL('/dashboard', req.url))
   }
 
-  return res
+  return response
 }
 
 export const config = {

@@ -11,6 +11,7 @@ import {
 import { signOut } from '@/lib/supabase'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
+import GameProvider from '@/components/providers/GameProvider'
 
 const NAV_ITEMS = [
   { href: '/dashboard', icon: LayoutDashboard, label: 'Tableau de bord', shortLabel: 'Accueil' },
@@ -34,6 +35,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }
 
   return (
+    <GameProvider>
     <div className="min-h-screen flex">
       {/* Sidebar desktop */}
       <aside
@@ -192,5 +194,6 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </nav>
       </main>
     </div>
+    </GameProvider>
   )
 }

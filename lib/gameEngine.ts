@@ -173,6 +173,7 @@ interface UserStats {
   workouts_completed: number
   global_rank: Rank
   titles_unlocked: string[]
+  skills_unlocked?: string[]
   all_subjects_rank_b?: boolean
 }
 
@@ -287,7 +288,7 @@ export function checkSkillUnlock(userStats: UserStats): string[] {
   }
 
   for (const skill of AVAILABLE_SKILLS) {
-    const alreadyUnlocked = (userStats as any).skills_unlocked?.includes(skill.id)
+    const alreadyUnlocked = userStats.skills_unlocked?.includes(skill.id)
     if (!alreadyUnlocked && conditionMet[skill.unlock_condition]) {
       newSkills.push(skill.id)
     }
