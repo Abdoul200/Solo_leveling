@@ -86,7 +86,7 @@ export async function POST(request: Request) {
       .lte('completed_at', todayEnd.toISOString())
 
     const xpGainedToday = (todayQuests || []).reduce(
-      (sum, q) => sum + (q.xp_reward || 0), 0
+      (sum: number, q: { xp_reward?: number }) => sum + (q.xp_reward || 0), 0
     )
     const questsCompletedToday = (todayQuests || []).length
 
