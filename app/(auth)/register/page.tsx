@@ -1,16 +1,15 @@
 'use client'
 
 import { useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 import {
   Eye, EyeOff, Zap, Lock, Mail, User, ChevronRight, ChevronLeft,
   Plus, X, Check, AlertCircle
 } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { signUpWithEmail, supabase } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
 import { PRESET_AVATARS, AURA_CONFIGS, PRESET_BANNERS, SUBJECT_ICONS, SUBJECT_COLORS } from '@/lib/constants'
-import toast from 'react-hot-toast'
 
 type Step = 1 | 2 | 3 | 4 | 5
 
@@ -31,18 +30,22 @@ export default function RegisterPage() {
   // Étape 1 - Compte
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [confirmPassword, setConfirmPassword] = useState('')
+  const [username, setUsername] = useState('')
   const [showPassword, setShowPassword] = useState(false)
 
-  // Étape 2 - Profil
-  const [username, setUsername] = useState('')
+  // Étape 2 - Avatar
+  const [avatarType, setAvatarType] = useState<'preset' | 'custom'>('preset')
   const [selectedAvatar, setSelectedAvatar] = useState(PRESET_AVATARS[0].id)
+  const [customAvatarFile, setCustomAvatarFile] = useState<File | null>(null)
+  const [customAvatarPreview, setCustomAvatarPreview] = useState('')
 
   // Étape 3 - Aura
-  const [selectedAura, setSelectedAura] = useState<string>('shadow')
+  const [selectedAura, setSelectedAura] = useState<string>('fire')
 
   // Étape 4 - Bannière
+  const [bannerType, setBannerType] = useState<'preset' | 'custom'>('preset')
   const [selectedBanner, setSelectedBanner] = useState(PRESET_BANNERS[0].id)
+  const [customBannerFile, setCustomBannerFile] = useState<File | null>(null)
 
   // Étape 5 - Matières
   const [subjects, setSubjects] = useState<NewSubject[]>([])
@@ -56,27 +59,16 @@ export default function RegisterPage() {
     setError('')
 
     if (step === 1) {
-      if (!email || !password || !confirmPassword) {
+      if (!email || !password || !username) {
         setError('Tous les champs sont requis')
         return
       }
-      if (password !== confirmPassword) {
-        setError('Les mots de passe ne correspondent pas')
-        return
-      }
-      if (password.length < 8) {
-        setError('Le mot de passe doit contenir au moins 8 caractères')
-        return
-      }
-    }
-
-    if (step === 2) {
-      if (!username.trim()) {
-        setError('Le nom de chasseur est requis')
+      if (password.length < 6) {
+        setError('Le mot de passe doit contenir au moins 6 caractères')
         return
       }
       if (username.length < 3) {
-        setError('Le nom doit contenir au moins 3 caractères')
+        setError('Le nom de chasseur doit contenir au moins 3 caractères')
         return
       }
     }
@@ -102,94 +94,104 @@ export default function RegisterPage() {
     setSubjects(subjects.filter((_, i) => i !== index))
   }
 
-  const handleRegister = async () => {
+  const handleFinalSubmit = async () => {
+    if (subjects.length === 0) {
+      setError('Ajoute au moins une matière avant de commencer')
+      return
+    }
     setLoading(true)
     setError('')
-
     try {
-      // Créer le compte
-      const { data: authData, error: authError } = await signUpWithEmail(email, password)
-
-      if (authError) {
-        if (authError.message.includes('already registered')) {
-          setError('Cet email est déjà utilisé')
-        } else {
-          setError(authError.message)
-        }
-        setLoading(false)
-        return
-      }
-
-      if (!authData.user) {
-        setError('Erreur lors de la création du compte')
-        setLoading(false)
-        return
-      }
+      // 1. Créer le compte Supabase Auth
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { data: { username } }
+      })
+      if (authError || !authData.user) throw authError || new Error('Erreur inscription')
 
       const userId = authData.user.id
-
-      // Créer le profil
       const avatarObj = PRESET_AVATARS.find(a => a.id === selectedAvatar)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { error: profileError } = await (supabase as any)
-        .from('profiles')
-        .insert({
-          id: userId,
-          email,
-          username,
-          avatar_url: avatarObj?.emoji || '👤',
-          avatar_type: 'preset',
-          aura_type: selectedAura,
-          banner_url: null,
-          banner_type: 'preset',
-          global_rank: 'E',
-          global_xp: 0,
-          global_level: 1,
-          streak_days: 0,
-          last_active_date: new Date().toISOString(),
-          titles_unlocked: [],
-          active_title: null,
-          skills_unlocked: [],
-        })
+      let avatarUrl: string = avatarObj?.emoji || '👤'
+      let bannerUrl: string = selectedBanner
 
-      if (profileError) {
-        console.error('Erreur profil:', profileError)
-      }
-
-      // Créer les matières
-      if (subjects.length > 0) {
-        const subjectsToInsert = subjects.map(s => ({
-          user_id: userId,
-          name: s.name,
-          color: s.color,
-          rank: 'E' as const,
-          xp: 0,
-          level: 1,
-          icon: s.icon,
-        }))
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { error: subjectsError } = await (supabase as any)
-          .from('subjects')
-          .insert(subjectsToInsert)
-
-        if (subjectsError) {
-          console.error('Erreur matières:', subjectsError)
+      // 2. Upload avatar custom si besoin
+      if (avatarType === 'custom' && customAvatarFile) {
+        const ext = customAvatarFile.name.split('.').pop()
+        const path = `${userId}/avatar.${ext}`
+        const { error: uploadError } = await supabase.storage
+          .from('avatars')
+          .upload(path, customAvatarFile, { upsert: true })
+        if (!uploadError) {
+          const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path)
+          avatarUrl = urlData.publicUrl
         }
       }
 
-      toast.success('Éveil initié ! Bienvenue, Chasseur.')
-      router.push('/dashboard')
+      // 3. Upload bannière custom si besoin
+      if (bannerType === 'custom' && customBannerFile) {
+        const ext = customBannerFile.name.split('.').pop()
+        const path = `${userId}/banner.${ext}`
+        const { error: uploadError } = await supabase.storage
+          .from('banners')
+          .upload(path, customBannerFile, { upsert: true })
+        if (!uploadError) {
+          const { data: urlData } = supabase.storage.from('banners').getPublicUrl(path)
+          bannerUrl = urlData.publicUrl
+        }
+      }
 
-    } catch (err) {
-      console.error(err)
-      setError('Une erreur est survenue. Réessaie.')
+      // 4. Créer le profil
+      await supabase.from('profiles').upsert({
+        id: userId,
+        email,
+        username,
+        avatar_url: avatarUrl,
+        avatar_type: avatarType,
+        aura_type: selectedAura,
+        banner_url: bannerUrl,
+        banner_type: bannerType,
+        global_rank: 'E',
+        global_xp: 0,
+        global_level: 1,
+        streak_days: 0,
+        last_active_date: new Date().toISOString(),
+        titles_unlocked: [],
+        active_title: null,
+        skills_unlocked: [],
+      })
+
+      // 5. Créer les matières
+      if (subjects.length > 0) {
+        await supabase.from('subjects').insert(
+          subjects.map(s => ({
+            user_id: userId,
+            name: s.name,
+            color: s.color,
+            icon: s.icon,
+            rank: 'E',
+            xp: 0,
+            level: 1,
+          }))
+        )
+      }
+
+      // 6. Générer les premières quêtes
+      await fetch('/api/quests/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId }),
+      })
+
+      // 7. Redirect
+      router.push('/dashboard')
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Le système a détecté une anomalie lors de l\'inscription'
+      setError(message)
     } finally {
       setLoading(false)
     }
   }
-
-  const auraConfig = AURA_CONFIGS.find(a => a.type === selectedAura)
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4 relative overflow-hidden">
@@ -258,7 +260,7 @@ export default function RegisterPage() {
             {/* ÉTAPE 1 - Compte */}
             {step === 1 && (
               <div>
-                <h2 className="text-xl font-bold text-sl-text mb-1">Création du Compte</h2>
+                <h2 className="text-xl font-bold text-sl-text mb-1">Initialisation du Système</h2>
                 <p className="text-sm text-sl-text-muted mb-6">Entre tes identifiants de chasseur</p>
 
                 <div className="space-y-4">
@@ -272,9 +274,9 @@ export default function RegisterPage() {
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="chasseur@exemple.com"
                         className="w-full pl-10 pr-4 py-3 rounded-lg text-sm outline-none transition-all"
-                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0, 212, 255, 0.15)', color: '#e2e8f0' }}
-                        onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.5)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.04)' }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.15)'; e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
+                        style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0, 212, 255, 0.3)', color: '#ffffff' }}
+                        onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.7)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.05)' }}
+                        onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.3)'; e.currentTarget.style.background = 'rgba(0,0,0,0.4)' }}
                       />
                     </div>
                   </div>
@@ -289,9 +291,9 @@ export default function RegisterPage() {
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
                         className="w-full pl-10 pr-10 py-3 rounded-lg text-sm outline-none transition-all"
-                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0, 212, 255, 0.15)', color: '#e2e8f0' }}
-                        onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.5)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.04)' }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.15)'; e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
+                        style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0, 212, 255, 0.3)', color: '#ffffff' }}
+                        onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.7)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.05)' }}
+                        onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.3)'; e.currentTarget.style.background = 'rgba(0,0,0,0.4)' }}
                       />
                       <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-sl-text-muted">
                         {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -300,18 +302,19 @@ export default function RegisterPage() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-medium text-sl-text-muted mb-1.5 uppercase tracking-wider">Confirmer le mot de passe</label>
+                    <label className="block text-xs font-medium text-sl-text-muted mb-1.5 uppercase tracking-wider">Nom de Chasseur</label>
                     <div className="relative">
-                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-sl-text-muted" />
+                      <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-sl-text-muted" />
                       <input
-                        type="password"
-                        value={confirmPassword}
-                        onChange={(e) => setConfirmPassword(e.target.value)}
-                        placeholder="••••••••"
+                        type="text"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        placeholder="Ton nom légendaire..."
+                        maxLength={20}
                         className="w-full pl-10 pr-4 py-3 rounded-lg text-sm outline-none transition-all"
-                        style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0, 212, 255, 0.15)', color: '#e2e8f0' }}
-                        onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.5)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.04)' }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.15)'; e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
+                        style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0, 212, 255, 0.3)', color: '#ffffff' }}
+                        onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.7)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.05)' }}
+                        onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.3)'; e.currentTarget.style.background = 'rgba(0,0,0,0.4)' }}
                       />
                     </div>
                   </div>
@@ -319,49 +322,36 @@ export default function RegisterPage() {
               </div>
             )}
 
-            {/* ÉTAPE 2 - Profil */}
+            {/* ÉTAPE 2 - Avatar */}
             {step === 2 && (
               <div>
-                <h2 className="text-xl font-bold text-sl-text mb-1">Identité du Chasseur</h2>
-                <p className="text-sm text-sl-text-muted mb-6">Choisis ton nom et ton apparence</p>
-
-                <div className="mb-5">
-                  <label className="block text-xs font-medium text-sl-text-muted mb-1.5 uppercase tracking-wider">Nom de Chasseur</label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-sl-text-muted" />
-                    <input
-                      type="text"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="Ton nom légendaire..."
-                      maxLength={20}
-                      className="w-full pl-10 pr-4 py-3 rounded-lg text-sm outline-none transition-all"
-                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0, 212, 255, 0.15)', color: '#e2e8f0' }}
-                      onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.5)'; e.currentTarget.style.background = 'rgba(0, 212, 255, 0.04)' }}
-                      onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.15)'; e.currentTarget.style.background = 'rgba(255,255,255,0.04)' }}
-                    />
-                  </div>
-                </div>
+                <h2 className="text-xl font-bold text-sl-text mb-1">Sélectionne ton Avatar</h2>
+                <p className="text-sm text-sl-text-muted mb-6">Choisis l&apos;apparence de ton chasseur</p>
 
                 <div>
                   <label className="block text-xs font-medium text-sl-text-muted mb-3 uppercase tracking-wider">Avatar</label>
-                  <div className="grid grid-cols-4 gap-3">
-                    {PRESET_AVATARS.map((avatar) => (
+                  <div className="grid grid-cols-3 gap-3 mb-3">
+                    {PRESET_AVATARS.slice(0, 9).map((avatar) => (
                       <motion.button
                         key={avatar.id}
                         type="button"
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
-                        onClick={() => setSelectedAvatar(avatar.id)}
-                        className="relative aspect-square rounded-xl flex flex-col items-center justify-center gap-1 text-2xl transition-all"
+                        onClick={() => {
+                          setSelectedAvatar(avatar.id)
+                          setAvatarType('preset')
+                          setCustomAvatarFile(null)
+                          setCustomAvatarPreview('')
+                        }}
+                        className="relative aspect-square rounded-xl flex flex-col items-center justify-center gap-1 text-3xl transition-all"
                         style={{
-                          background: selectedAvatar === avatar.id ? `${avatar.color}20` : 'rgba(255,255,255,0.03)',
-                          border: selectedAvatar === avatar.id ? `2px solid ${avatar.color}` : '1px solid rgba(255,255,255,0.08)',
-                          boxShadow: selectedAvatar === avatar.id ? `0 0 15px ${avatar.color}30` : 'none',
+                          background: avatarType === 'preset' && selectedAvatar === avatar.id ? `${avatar.color}20` : 'rgba(255,255,255,0.03)',
+                          border: avatarType === 'preset' && selectedAvatar === avatar.id ? `2px solid ${avatar.color}` : '1px solid rgba(255,255,255,0.08)',
+                          boxShadow: avatarType === 'preset' && selectedAvatar === avatar.id ? `0 0 15px ${avatar.color}50` : 'none',
                         }}
                       >
                         {avatar.emoji}
-                        {selectedAvatar === avatar.id && (
+                        {avatarType === 'preset' && selectedAvatar === avatar.id && (
                           <div className="absolute top-1 right-1 w-4 h-4 rounded-full flex items-center justify-center" style={{ background: avatar.color }}>
                             <Check className="w-2.5 h-2.5 text-white" />
                           </div>
@@ -369,6 +359,21 @@ export default function RegisterPage() {
                       </motion.button>
                     ))}
                   </div>
+                  {/* Upload avatar custom */}
+                  <label className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-all"
+                    style={{ background: avatarType === 'custom' ? 'rgba(0,212,255,0.1)' : 'rgba(255,255,255,0.04)', border: '1px solid rgba(0,212,255,0.2)', color: '#94a3b8' }}>
+                    <Plus className="w-4 h-4" />
+                    {customAvatarFile ? customAvatarFile.name : 'Importer un avatar'}
+                    {customAvatarPreview && <img src={customAvatarPreview} alt="aperçu avatar" className="w-6 h-6 rounded-full object-cover ml-auto" />}
+                    <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+                      const file = e.target.files?.[0]
+                      if (file) {
+                        setCustomAvatarFile(file)
+                        setCustomAvatarPreview(URL.createObjectURL(file))
+                        setAvatarType('custom')
+                      }
+                    }} />
+                  </label>
                 </div>
               </div>
             )}
@@ -419,7 +424,7 @@ export default function RegisterPage() {
             {/* ÉTAPE 4 - Bannière */}
             {step === 4 && (
               <div>
-                <h2 className="text-xl font-bold text-sl-text mb-1">Bannière de Profil</h2>
+                <h2 className="text-xl font-bold text-sl-text mb-1">Choisis ta Bannière</h2>
                 <p className="text-sm text-sl-text-muted mb-6">Choisis l&apos;ambiance de ton profil de chasseur</p>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -429,18 +434,18 @@ export default function RegisterPage() {
                       type="button"
                       whileHover={{ scale: 1.03 }}
                       whileTap={{ scale: 0.97 }}
-                      onClick={() => setSelectedBanner(banner.id)}
+                      onClick={() => { setSelectedBanner(banner.id); setBannerType('preset') }}
                       className="relative aspect-video rounded-xl overflow-hidden transition-all"
                       style={{
                         background: banner.gradient,
-                        border: selectedBanner === banner.id ? '2px solid #00d4ff' : '1px solid rgba(255,255,255,0.08)',
-                        boxShadow: selectedBanner === banner.id ? '0 0 20px rgba(0, 212, 255, 0.3)' : 'none',
+                        border: bannerType === 'preset' && selectedBanner === banner.id ? '2px solid #00d4ff' : '1px solid rgba(255,255,255,0.08)',
+                        boxShadow: bannerType === 'preset' && selectedBanner === banner.id ? '0 0 20px rgba(0, 212, 255, 0.3)' : 'none',
                       }}
                     >
                       <div className="absolute inset-0 flex items-end p-3">
                         <span className="text-xs font-medium text-white/80">{banner.name}</span>
                       </div>
-                      {selectedBanner === banner.id && (
+                      {bannerType === 'preset' && selectedBanner === banner.id && (
                         <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-sl-blue flex items-center justify-center">
                           <Check className="w-3 h-3 text-white" />
                         </div>
@@ -448,6 +453,19 @@ export default function RegisterPage() {
                     </motion.button>
                   ))}
                 </div>
+                {/* Upload bannière custom */}
+                <label className="mt-3 flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-sm transition-all"
+                  style={{ background: bannerType === 'custom' ? 'rgba(0,212,255,0.1)' : 'rgba(255,255,255,0.04)', border: '1px solid rgba(0,212,255,0.2)', color: '#94a3b8' }}>
+                  <Plus className="w-4 h-4" />
+                  {customBannerFile ? customBannerFile.name : 'Importer une image de bannière'}
+                  <input type="file" accept="image/*" className="hidden" onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) {
+                      setCustomBannerFile(file)
+                      setBannerType('custom')
+                    }
+                  }} />
+                </label>
               </div>
             )}
 
@@ -455,7 +473,7 @@ export default function RegisterPage() {
             {step === 5 && (
               <div>
                 <h2 className="text-xl font-bold text-sl-text mb-1">Tes Matières</h2>
-                <p className="text-sm text-sl-text-muted mb-5">Ajoute les matières que tu étudies (optionnel)</p>
+                <p className="text-sm text-sl-text-muted mb-5">Ajoute les matières que tu étudies (au moins 1)</p>
 
                 {/* Matières existantes */}
                 {subjects.length > 0 && (
@@ -488,9 +506,9 @@ export default function RegisterPage() {
                       onKeyDown={(e) => e.key === 'Enter' && addSubject()}
                       placeholder="Nom de la matière (ex: Mathématiques)"
                       className="w-full py-2.5 px-3 rounded-lg text-sm outline-none"
-                      style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0, 212, 255, 0.15)', color: '#e2e8f0' }}
-                      onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.5)' }}
-                      onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.15)' }}
+                      style={{ background: 'rgba(0,0,0,0.4)', border: '1px solid rgba(0, 212, 255, 0.3)', color: '#ffffff' }}
+                      onFocus={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.7)' }}
+                      onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(0, 212, 255, 0.3)' }}
                     />
                   </div>
 
@@ -589,13 +607,14 @@ export default function RegisterPage() {
                   type="button"
                   whileHover={{ scale: loading ? 1 : 1.02 }}
                   whileTap={{ scale: loading ? 1 : 0.98 }}
-                  onClick={handleRegister}
-                  disabled={loading}
+                  onClick={handleFinalSubmit}
+                  disabled={loading || subjects.length === 0}
                   className="flex-1 flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-bold"
                   style={{
-                    background: loading ? 'rgba(109, 40, 217, 0.5)' : 'linear-gradient(135deg, #6d28d9, #00d4ff)',
+                    background: loading || subjects.length === 0 ? 'rgba(109, 40, 217, 0.5)' : 'linear-gradient(135deg, #6d28d9, #00d4ff)',
                     color: 'white',
-                    boxShadow: loading ? 'none' : '0 0 20px rgba(0, 212, 255, 0.3)',
+                    boxShadow: loading || subjects.length === 0 ? 'none' : '0 0 20px rgba(0, 212, 255, 0.3)',
+                    cursor: subjects.length === 0 ? 'not-allowed' : 'pointer',
                   }}
                 >
                   {loading ? (
@@ -606,7 +625,7 @@ export default function RegisterPage() {
                   ) : (
                     <>
                       <Zap className="w-4 h-4" />
-                      Commencer l&apos;Éveil !
+                      Commencer l&apos;aventure
                     </>
                   )}
                 </motion.button>
