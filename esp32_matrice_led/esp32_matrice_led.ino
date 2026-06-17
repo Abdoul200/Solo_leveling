@@ -31,8 +31,10 @@ const char* NOM_UTILISATEUR = "Abdul";
 #define INTERVALLE_METEO    600000UL
 #define INTERVALLE_CAPTEUR    5000UL
 #define DUREE_CAPTEUR         3000UL
-#define INTERVALLE_LUX         300UL   // 300 ms — réaction rapide au changement de lumière
+#define INTERVALLE_LUX         300UL
 #define INTERVALLE_DHT        2500UL
+
+#define DUREE_PULSE 180UL   // durée du glow horloge en ms
 
 // ============================================================
 //  MODES
@@ -66,7 +68,7 @@ bool          modeCapteur      = false;
 unsigned long debutModeCapteur = 0;
 
 float luxActuelle = 0.0f;
-float luxLissee   = -1.0f;   // -1 = non initialisée
+float luxLissee   = -1.0f;
 float luxMin      = 99999.0f;
 float luxMax      = 0.0f;
 
@@ -78,6 +80,10 @@ String erreurDHT   = "";
 bool systemePret  = false;
 bool colonVisible = true;
 int  derniereSec  = -1;
+
+// ── Pulse horloge (glow à chaque seconde)
+bool          pulseActif = false;
+unsigned long debutPulse = 0;
 
 // ── Balles animation WiFi
 struct Balle { float x, y, vx, vy; uint16_t couleur; uint8_t rayon; };
@@ -129,20 +135,17 @@ const char* messagePersonnel() {
 }
 
 // ============================================================
-//  AUTO-BRIGHTNESS — lux fort → panneau fort, lux faible → panneau sombre
-//  EMA adaptative : réaction rapide aux grands sauts (torche), lente sinon
+//  AUTO-BRIGHTNESS — lux fort = panneau fort, lux faible = panneau sombre
 // ============================================================
 void ajusterBrillance(float lux) {
   if (luxLissee < 0.0f) {
-    luxLissee = lux;                              // 1ère initialisation
+    luxLissee = lux;
   } else {
     float diff  = fabsf(lux - luxLissee);
-    // Alpha élevé si changement brutal (torche allumée/éteinte), faible sinon
     float alpha = (diff > 200.0f) ? 0.60f : 0.10f;
     luxLissee   = luxLissee * (1.0f - alpha) + lux * alpha;
   }
 
-  // Plage pratique 0..8000 lux → brightness 8..255 (courbe log)
   float logLux = logf(luxLissee + 1.0f);
   float logMax = logf(8001.0f);
   uint8_t b    = (uint8_t)(8.0f + (logLux / logMax) * 247.0f);
@@ -153,14 +156,12 @@ void ajusterBrillance(float lux) {
 }
 
 // ============================================================
-//  SPARKLES — pixels scintillants sur la moitié droite/basse
+//  SPARKLES
 // ============================================================
 void mettreAJourSparkles() {
-  // Décrémenter TTL de chaque sparkle vivant
   for (int i = 0; i < MAX_SPARKLES; i++) {
     if (sparkles[i].ttl > 0) sparkles[i].ttl--;
   }
-  // Spawn aléatoire (1 chance sur 6)
   if (random(0, 6) == 0) {
     for (int i = 0; i < MAX_SPARKLES; i++) {
       if (sparkles[i].ttl == 0) {
@@ -173,7 +174,6 @@ void mettreAJourSparkles() {
       }
     }
   }
-  // Dessiner les sparkles actifs (après fillScreen — donc toujours en dernier)
   for (int i = 0; i < MAX_SPARKLES; i++) {
     if (sparkles[i].ttl > 0)
       display->drawPixel(sparkles[i].x, sparkles[i].y, sparkles[i].col);
@@ -184,7 +184,6 @@ void mettreAJourSparkles() {
 //  ANIMATION DÉMARRAGE
 // ============================================================
 void animationDemarrage() {
-  // Phase 1 : pluie de colonnes style "matrix"
   for (int pass = 0; pass < 4; pass++) {
     display->fillScreen(0);
     for (int col = pass % 2; col < PANEL_RES_X; col += 2) {
@@ -196,7 +195,6 @@ void animationDemarrage() {
   }
   display->fillScreen(0);
 
-  // Phase 2 : balayage horizontal lumineux (traîne bleue)
   for (int x = 0; x < PANEL_RES_X + 10; x++) {
     display->fillScreen(0);
     for (int t = 0; t <= 9 && (x - t) >= 0 && (x - t) < PANEL_RES_X; t++) {
@@ -208,15 +206,12 @@ void animationDemarrage() {
   }
   display->fillScreen(0);
 
-  // Cadre décoratif
   display->drawRect(0, 0, PANEL_RES_X, PANEL_RES_Y, display->color565(0, 80, 140));
 
-  // Phase 3 : "Bonjour" lettre par lettre arc-en-ciel
   const uint16_t arc[] = {ROUGE, ORANGE, JAUNE, VERT, CYAN, BLEU, MAGENTA};
   const char* msg1 = "Bonjour";
   int x1 = (PANEL_RES_X - (int)strlen(msg1) * 6) / 2;
   for (int i = 0; i < (int)strlen(msg1); i++) {
-    // Traîne lumineuse sur la gauche
     for (int gl = 3; gl >= 1; gl--) {
       int px = x1 + i * 6 - gl * 2;
       if (px >= 0) {
@@ -232,24 +227,20 @@ void animationDemarrage() {
   }
   delay(200);
 
-  // Séparateur doré
   display->drawFastHLine(8, 13, 48, display->color565(60, 40, 0));
 
-  // Phase 4 : nom + étoiles scintillantes
   String msgNom = String(NOM_UTILISATEUR) + " !";
   int xNom = (PANEL_RES_X - (int)msgNom.length() * 6) / 2;
   for (int i = 0; i < (int)msgNom.length(); i++) {
     display->setTextColor(JAUNE);
     display->setCursor(xNom + i * 6, 18);
     display->print(msgNom[i]);
-    // 3 étoiles par lettre
     for (int s = 0; s < 3; s++)
       display->drawPixel(random(2, 62), random(14, 30),
                          random(2) ? BLANC : CYAN);
     delay(100);
   }
 
-  // Phase 5 : flash de confirmation
   delay(300);
   for (int fl = 0; fl < 6; fl++) {
     display->setBrightness8(fl % 2 == 0 ? 230 : 40);
@@ -258,7 +249,6 @@ void animationDemarrage() {
   display->setBrightness8(90);
   delay(200);
 
-  // Phase 6 : balayage de fermeture vers le bas
   for (int y = 0; y < PANEL_RES_Y; y++) {
     display->drawFastHLine(0, y, PANEL_RES_X, 0);
     delay(10);
@@ -274,13 +264,11 @@ void animationChangementMode() {
   const uint16_t cols[] = {CYAN,      JAUNE,    MAGENTA};
   uint16_t c = cols[modeActuel];
 
-  // Balayage diagonal gauche→droite
   for (int x = 0; x < PANEL_RES_X + PANEL_RES_Y; x += 2) {
     for (int y = 0; y < PANEL_RES_Y; y++) {
       int px = x - y;
       if (px >= 0 && px < PANEL_RES_X)
         display->drawPixel(px, y, c);
-      // Traîne semi-transparente
       if (px - 1 >= 0 && px - 1 < PANEL_RES_X)
         display->drawPixel(px - 1, y,
           display->color565(
@@ -291,7 +279,6 @@ void animationChangementMode() {
     delay(3);
   }
 
-  // Nom du mode au centre avec cadre
   display->fillScreen(0);
   display->drawRect(0, 0, PANEL_RES_X, PANEL_RES_Y, c);
 
@@ -300,7 +287,6 @@ void animationChangementMode() {
   display->setCursor(xc, 5);
   display->print(noms[modeActuel]);
 
-  // Indicateurs de mode (disques)
   for (int m = 0; m < NB_MODES; m++) {
     if (m == (int)modeActuel)
       display->fillCircle(22 + m * 10, 22, 3, cols[m]);
@@ -310,7 +296,6 @@ void animationChangementMode() {
 
   delay(700);
 
-  // Fermeture : colonnes disparaissent de gauche à droite
   for (int x = 0; x < PANEL_RES_X; x += 2) {
     display->drawFastVLine(x,     0, PANEL_RES_Y, 0);
     if (x > 0) display->drawFastVLine(x - 1, 0, PANEL_RES_Y, 0);
@@ -331,15 +316,12 @@ void animationAttenteWifi() {
 
   display->fillScreen(0);
 
-  // Double cadre pulsant
   float pulse = sinf(compteurAnim * 0.10f);
   uint8_t pb  = (uint8_t)((pulse + 1.0f) * 50.0f);
   display->drawRect(0, 0, 64, 32, display->color565(pb, 0, (uint8_t)(pb * 2)));
   display->drawRect(1, 1, 62, 30, display->color565((uint8_t)(pb / 3), 0, pb));
 
-  // Balles avec traîne
   for (int i = 0; i < NB_BALLES; i++) {
-    // Traîne (position décalée de 2 frames)
     int tx = (int)(balles[i].x - balles[i].vx * 2.5f);
     int ty = (int)(balles[i].y - balles[i].vy * 2.5f);
     display->fillCircle(tx, ty, balles[i].rayon,
@@ -348,7 +330,6 @@ void animationAttenteWifi() {
         (uint8_t)( balles[i].couleur >>  5 & 0x3F),
         (uint8_t)((balles[i].couleur       & 0x1F) * 2)));
 
-    // Déplacement
     balles[i].x += balles[i].vx;
     balles[i].y += balles[i].vy;
 
@@ -368,22 +349,18 @@ void animationAttenteWifi() {
                         balles[i].rayon, balles[i].couleur);
   }
 
-  // "NO WIFI!" clignotant orange/jaune
   uint16_t cTxt = (compteurAnim / 6) % 2 == 0 ? JAUNE : ORANGE;
   display->setTextColor(cTxt);
   display->setCursor(7, 6);
   display->print("NO WIFI!");
 
-  // Spinner rapide
   const char* sp[] = {"|", "/", "-", "\\"};
   display->setTextColor(CYAN);
   display->setCursor(57, 1);
   display->print(sp[(compteurAnim / 3) % 4]);
 
-  // Séparateur
   display->drawFastHLine(0, 21, 64, display->color565(50, 50, 50));
 
-  // Texte défilant arc-en-ciel
   const uint16_t pal7[] = {ROUGE, ORANGE, JAUNE, VERT, CYAN, BLEU, MAGENTA};
   for (int i = 0; i < (int)msgWifi.length(); i++) {
     int xL = animScrollPos + i * 6;
@@ -467,57 +444,81 @@ void lireDHT11() {
 }
 
 // ============================================================
-//  ÉCRAN CAPTEUR BH1750 + DHT11
+//  ÉCRAN CAPTEUR — accepte un décalage vertical (pour slide)
 // ============================================================
-void afficherEcranCapteur() {
+void afficherEcranCapteur(int yOff = 0) {
   display->fillScreen(0);
 
-  // Titre
-  display->setTextColor(CYAN);
-  display->setCursor(2, 1);
-  display->print("CAPTEURS");
+  auto inScreen = [](int y) { return y >= 0 && y < PANEL_RES_Y; };
 
-  // Statut DHT
-  display->setTextColor(dhtOK ? VERT : ROUGE);
-  display->setCursor(dhtOK ? 46 : 40, 1);
-  display->print(dhtOK ? "OK" : "DHT!");
-
-  display->drawFastHLine(0, 10, 64, display->color565(50, 50, 50));
-
-  // DHT11 : température + humidité
-  if (dhtOK) {
-    char bufDHT[18];
-    sprintf(bufDHT, "T:%dC H:%d%%", temperatureDHT, humiditeDHT);
-    display->setTextColor(couleurTemperature(temperatureDHT));
-    display->setCursor(2, 12);
-    display->print(bufDHT);
-  } else {
-    display->setTextColor(ROUGE);
-    display->setCursor(2, 12);
-    display->print("DHT erreur");
+  if (inScreen(1 + yOff)) {
+    display->setTextColor(CYAN);
+    display->setCursor(2, 1 + yOff);
+    display->print("CAPTEURS");
+    display->setTextColor(dhtOK ? VERT : ROUGE);
+    display->setCursor(dhtOK ? 46 : 40, 1 + yOff);
+    display->print(dhtOK ? "OK" : "DHT!");
   }
 
-  display->drawFastHLine(0, 21, 64, display->color565(50, 50, 50));
+  if (inScreen(10 + yOff))
+    display->drawFastHLine(0, 10 + yOff, 64, display->color565(50, 50, 50));
 
-  // BH1750 : valeur lux
-  char bufLux[16];
-  if      (luxActuelle < 1.0f)   sprintf(bufLux, "Lux:<1");
-  else if (luxActuelle < 100.0f) sprintf(bufLux, "Lux:%.1f", luxActuelle);
-  else                            sprintf(bufLux, "Lux:%.0f", luxActuelle);
-
-  display->setTextColor(JAUNE);
-  display->setCursor(2, 23);
-  display->print(bufLux);
-
-  // Barre dégradée vert→rouge sur même échelle log que la brillance
-  int barre = (int)(logf(max(luxLissee, 0.0f) + 1.0f) / logf(8001.0f) * 18.0f);
-  barre = constrain(barre, 0, 18);
-  display->drawRect(44, 23, 20, 7, display->color565(40, 40, 40));
-  for (int px = 0; px < barre; px++) {
-    uint8_t r = (uint8_t)(px * 14);
-    uint8_t g = (uint8_t)((18 - px) * 14);
-    display->drawFastVLine(45 + px, 24, 5, display->color565(r, g, 0));
+  if (inScreen(12 + yOff)) {
+    if (dhtOK) {
+      char bufDHT[18];
+      sprintf(bufDHT, "T:%dC H:%d%%", temperatureDHT, humiditeDHT);
+      display->setTextColor(couleurTemperature(temperatureDHT));
+      display->setCursor(2, 12 + yOff);
+      display->print(bufDHT);
+    } else {
+      display->setTextColor(ROUGE);
+      display->setCursor(2, 12 + yOff);
+      display->print("DHT erreur");
+    }
   }
+
+  if (inScreen(21 + yOff))
+    display->drawFastHLine(0, 21 + yOff, 64, display->color565(50, 50, 50));
+
+  if (inScreen(23 + yOff)) {
+    char bufLux[16];
+    if      (luxActuelle < 1.0f)   sprintf(bufLux, "Lux:<1");
+    else if (luxActuelle < 100.0f) sprintf(bufLux, "Lux:%.1f", luxActuelle);
+    else                            sprintf(bufLux, "Lux:%.0f", luxActuelle);
+    display->setTextColor(JAUNE);
+    display->setCursor(2, 23 + yOff);
+    display->print(bufLux);
+
+    int barre = (int)(logf(fmaxf(luxLissee, 0.0f) + 1.0f) / logf(8001.0f) * 18.0f);
+    barre = constrain(barre, 0, 18);
+    if (inScreen(23 + yOff) && inScreen(29 + yOff)) {
+      display->drawRect(44, 23 + yOff, 20, 7, display->color565(40, 40, 40));
+      for (int px = 0; px < barre; px++) {
+        uint8_t r = (uint8_t)(px * 14);
+        uint8_t g = (uint8_t)((18 - px) * 14);
+        display->drawFastVLine(45 + px, 24 + yOff, 5, display->color565(r, g, 0));
+      }
+    }
+  }
+}
+
+// ============================================================
+//  TRANSITIONS SLIDE — l'écran capteur glisse depuis le bas
+// ============================================================
+void transitionEntreeCapteur() {
+  for (int off = PANEL_RES_Y; off > 0; off -= 4) {
+    afficherEcranCapteur(off);
+    delay(14);
+  }
+  afficherEcranCapteur(0);
+}
+
+void transitionSortieCapteur() {
+  for (int off = 0; off <= PANEL_RES_Y; off += 4) {
+    afficherEcranCapteur(off);
+    delay(14);
+  }
+  display->fillScreen(0);
 }
 
 // ============================================================
@@ -635,7 +636,6 @@ void setup() {
 
   animationDemarrage();
 
-  // 4 balles pour l'animation WiFi
   balles[0] = { 8.0f,  8.0f,  1.4f,  0.9f, ROUGE,   2};
   balles[1] = {40.0f,  5.0f, -1.1f,  1.3f, VERT,    2};
   balles[2] = {25.0f, 14.0f,  0.8f, -1.1f, MAGENTA, 1};
@@ -682,13 +682,11 @@ void loop() {
   // ── CAS 3 — Système opérationnel ─────────────────────────────
   unsigned long nowMs = millis();
 
-  // Météo toutes les 10 min
   if (nowMs - derniereMeteo >= INTERVALLE_METEO) {
     derniereMeteo = nowMs;
     recupererMeteo();
   }
 
-  // Lux toutes les 300 ms → ajustement instantané de la brillance
   if (nowMs - derniereLectureLux >= INTERVALLE_LUX) {
     derniereLectureLux = nowMs;
     float l = capteurLumiere.readLightLevel();
@@ -700,7 +698,6 @@ void loop() {
     }
   }
 
-  // DHT11 toutes les 2,5 s
   if (nowMs - derniereLectureDHT >= INTERVALLE_DHT) {
     derniereLectureDHT = nowMs;
     lireDHT11();
@@ -718,17 +715,19 @@ void loop() {
     return;
   }
 
-  // ── Écran capteur auto (5 s normal / 3 s capteur) ────────────
+  // ── Écran capteur auto avec transitions slide ─────────────────
   if (!modeCapteur && (nowMs - dernierAffichageCapteur >= INTERVALLE_CAPTEUR)) {
     modeCapteur      = true;
     debutModeCapteur = nowMs;
+    transitionEntreeCapteur();   // glisse depuis le bas
   }
   if (modeCapteur) {
     if (nowMs - debutModeCapteur >= DUREE_CAPTEUR) {
+      transitionSortieCapteur();  // glisse vers le bas
       modeCapteur             = false;
-      dernierAffichageCapteur = nowMs;
+      dernierAffichageCapteur = millis();
     } else {
-      afficherEcranCapteur();
+      afficherEcranCapteur(0);
       delay(80);
       return;
     }
@@ -750,6 +749,9 @@ void loop() {
     if (infosTemps.tm_sec != derniereSec) {
       derniereSec  = infosTemps.tm_sec;
       colonVisible = !colonVisible;
+      // Déclenche le glow à chaque changement de seconde
+      pulseActif = true;
+      debutPulse = millis();
     }
   }
 
@@ -771,9 +773,9 @@ void loop() {
 
   display->fillScreen(0);
 
-  // Texte défilant arc-en-ciel avec décalage temporel (couleur qui bouge)
+  // Texte défilant arc-en-ciel — tShift borné pour éviter overflow après 48h
   const uint16_t arc7[] = {ROUGE, ORANGE, JAUNE, VERT, CYAN, BLEU, MAGENTA};
-  int tShift = (int)(millis() / 80);
+  int tShift = (int)((millis() / 80UL) % 7UL);
   for (int i = 0; i < (int)texteDefilant.length(); i++) {
     int xLettre = positionX + i * 6;
     if (xLettre > -6 && xLettre < PANEL_RES_X) {
@@ -785,14 +787,41 @@ void loop() {
 
   display->drawFastHLine(0, 13, 64, display->color565(50, 50, 50));
 
-  // Heure : teinte jour/nuit
+  // ── Horloge avec pulse glow à chaque seconde ──────────────────
   bool nuit = estModeNuit();
   uint16_t cHeure = nuit ? display->color565(0, 130, 190) : CYAN;
   uint16_t cDate  = nuit ? display->color565(0, 150,  55) : VERT;
 
-  display->setTextColor(cHeure);                    display->setCursor(1, 17); display->print(bufH);
-  display->setTextColor(colonVisible ? cHeure : 0); display->print(":");
-  display->setTextColor(cHeure);                    display->print(bufM);
+  // Calcul de la couleur de glow (blanc→cHeure sur DUREE_PULSE ms)
+  uint16_t cGlow = cHeure;
+  if (pulseActif) {
+    unsigned long age = millis() - debutPulse;
+    if (age >= DUREE_PULSE) {
+      pulseActif = false;
+    } else {
+      // fade: blanc brillant au début, retour à cHeure à la fin
+      uint8_t f = (uint8_t)(255 - (age * 255UL / DUREE_PULSE));
+      cGlow = display->color565(f, 255, 255);  // cyan→blanc selon fade
+    }
+  }
+
+  // Halo : dessiner les chiffres décalés de 1px en couleur douce avant le dessin principal
+  if (pulseActif) {
+    unsigned long age = millis() - debutPulse;
+    uint8_t halo = (uint8_t)(80 - (age * 80UL / DUREE_PULSE));
+    uint16_t cHalo = display->color565(0, halo, halo);
+    display->setTextColor(cHalo); display->setCursor(0, 17); display->print(bufH);
+    display->setTextColor(colonVisible ? cHalo : 0); display->print(":");
+    display->setTextColor(cHalo); display->print(bufM);
+    display->setTextColor(cHalo); display->setCursor(2, 17); display->print(bufH);
+    display->setTextColor(colonVisible ? cHalo : 0); display->print(":");
+    display->setTextColor(cHalo); display->print(bufM);
+  }
+
+  // Chiffres principaux (couleur glow ou normale)
+  display->setTextColor(cGlow);                    display->setCursor(1, 17); display->print(bufH);
+  display->setTextColor(colonVisible ? cGlow : 0); display->print(":");
+  display->setTextColor(cGlow);                    display->print(bufM);
 
   display->setTextColor(cDate); display->setCursor(1, 25); display->print(tamponDate);
 
@@ -800,9 +829,8 @@ void loop() {
 
   // Température (DHT en priorité, sinon météo)
   char texteTemp[8];
-  bool useDHT = dhtOK;
-  sprintf(texteTemp, "%dC", useDHT ? temperatureDHT : meteo_temp);
-  display->setTextColor(couleurTemperature(useDHT ? temperatureDHT : meteo_temp));
+  sprintf(texteTemp, "%dC", dhtOK ? temperatureDHT : meteo_temp);
+  display->setTextColor(couleurTemperature(dhtOK ? temperatureDHT : meteo_temp));
   display->setCursor(34, 17);
   display->print(texteTemp);
 
@@ -813,7 +841,6 @@ void loop() {
   display->setCursor(34, 25);
   display->print(meteoAff);
 
-  // Pixels scintillants (zone droite/basse, dessinés en dernier)
   mettreAJourSparkles();
 
   positionX -= vitesse;
